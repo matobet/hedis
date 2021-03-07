@@ -124,7 +124,7 @@ connGetReplies conn@Conn{..} = go S.empty (SingleLine "previous of first")
         previous `seq` return ()
         scanResult <- Scanner.scanWith readMore reply rest
         case scanResult of
-          Scanner.Fail{}       -> CC.errConnClosed
+          Scanner.Fail{}    -> CC.errConnClosed
           Scanner.More{}    -> error "Hedis: parseWith returned Partial"
           Scanner.Done rest' r -> do
             -- r is the same as 'head' of 'connPending'. Since we just

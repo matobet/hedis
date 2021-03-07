@@ -1,6 +1,4 @@
-{-# LANGUAGE OverloadedStrings, GeneralizedNewtypeDeriving, RecordWildCards,
-    MultiParamTypeClasses, FunctionalDependencies, FlexibleInstances, CPP,
-    DeriveDataTypeable, StandaloneDeriving #-}
+{-# LANGUAGE OverloadedStrings, RecordWildCards, FunctionalDependencies, FlexibleInstances, CPP #-}
 
 module Database.Redis.Core (
     Redis(), unRedis, reRedis,
@@ -59,7 +57,7 @@ unRedis (Redis r) = r
 
 -- |Reconstruct Redis constructor.
 reRedis :: ReaderT RedisEnv IO a -> Redis a
-reRedis r = Redis r
+reRedis = Redis
 
 -- |Internal version of 'runRedis' that does not depend on the 'Connection'
 --  abstraction. Used to run the AUTH command when connecting.

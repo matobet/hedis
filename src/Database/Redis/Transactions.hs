@@ -49,7 +49,7 @@ instance RedisCtx RedisTx Queued where
 --
 --  'Queued' values are composable by utilizing the 'Functor', 'Applicative' or
 --  'Monad' interfaces.
-data Queued a = Queued (Vector Reply -> Either Reply a)
+newtype Queued a = Queued (Vector Reply -> Either Reply a)
 
 instance Functor Queued where
     fmap f (Queued g) = Queued (fmap f . g)

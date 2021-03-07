@@ -20,7 +20,7 @@ import qualified Network.Socket as NS
 import qualified Data.HashMap.Strict as HM
 
 import qualified Database.Redis.ProtocolPipelining as PP
-import Database.Redis.Core(Redis, runRedisInternal, runRedisClusteredInternal)
+import Database.Redis.Core(sendRequest, RedisCtx, Redis, runRedisInternal, runRedisClusteredInternal)
 import Database.Redis.Protocol(Reply(..))
 import Database.Redis.Cluster(ShardMap(..), Node, Shard(..))
 import qualified Database.Redis.Cluster as Cluster
@@ -45,6 +45,9 @@ import Database.Redis.Commands
 data Connection
     = NonClusteredConnection (Pool PP.Connection)
     | ClusteredConnection (MVar ShardMap) (Pool Cluster.Connection)
+
+data ProtocolVersion = RESP2 | RESP3
+    deriving Show
 
 -- |Information for connnecting to a Redis server.
 --
@@ -81,9 +84,11 @@ data ConnectInfo = ConnInfo
     --   get connected in this interval of time.
     , connectTLSParams      :: Maybe ClientParams
     -- ^ Optional TLS parameters. TLS will be enabled if this is provided.
+    , connectProtocol       :: ProtocolVersion
     } deriving Show
 
 data ConnectError = ConnectAuthError Reply
+                  | ConnectProtocolError Reply
                   | ConnectSelectError Reply
     deriving (Eq, Show, Typeable)
 
@@ -100,6 +105,7 @@ instance Exception ConnectError
 --  connectMaxIdleTime    = 30              -- Keep open for 30 seconds
 --  connectTimeout        = Nothing         -- Don't add timeout logic
 --  connectTLSParams      = Nothing         -- Do not use TLS
+--  connectProtocol       = RESP3           -- Protocol version to use
 -- @
 --
 defaultConnectInfo :: ConnectInfo
@@ -112,6 +118,7 @@ defaultConnectInfo = ConnInfo
     , connectMaxIdleTime    = 30
     , connectTimeout        = Nothing
     , connectTLSParams      = Nothing
+    , connectProtocol       = RESP3
     }
 
 createConnection :: ConnectInfo -> IO PP.Connection
@@ -133,6 +140,14 @@ createConnection ConnInfo{..} = do
               case resp of
                 Left r -> liftIO $ throwIO $ ConnectAuthError r
                 _      -> return ()
+
+        case connectProtocol of
+            RESP2 -> return ()
+            RESP3 -> do
+                resp <- sendUpgradeRequest
+                case resp of
+                    Left r -> liftIO . throwIO $ ConnectProtocolError r
+                    _ -> return ()
         -- SELECT
         when (connectDatabase /= 0) $ do
           resp <- select connectDatabase
@@ -140,6 +155,9 @@ createConnection ConnInfo{..} = do
               Left r -> liftIO $ throwIO $ ConnectSelectError r
               _      -> return ()
     return conn'
+    where
+        sendUpgradeRequest :: (RedisCtx m f) => m (f Reply)
+        sendUpgradeRequest = sendRequest ["HELLO", "3"]
 
 -- |Constructs a 'Connection' pool to a Redis server designated by the
 --  given 'ConnectInfo'. The first connection is not actually established

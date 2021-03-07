@@ -71,7 +71,7 @@ removeAllTest conn = Test.testCase "Multithreaded Pub/Sub - basic" $ do
                               [("bar1:*", phandler "InitialBar1" msgVar), ("bar2:*", phandler "InitialBar2" msgVar)]
   withAsync (pubSubForever conn ctrl (atomically $ writeTVar initialComplete True)) $ \_ -> do
     -- wait for initial
-    atomically $ readTVar initialComplete >>= \b -> if b then return () else retry
+    atomically $ readTVar initialComplete >>= \b -> unless b retry
     expectRedisChannels conn ["foo1", "foo2"]
 
     runRedis conn $ publish "foo1" "Hello"
@@ -99,7 +99,7 @@ removeAllTest conn = Test.testCase "Multithreaded Pub/Sub - basic" $ do
     runRedis conn $ publish "bar2:aaa" "0987"
     waitForPMessage msgVar "InitialBar2" "bar2:aaa" "0987"
 
-data TestError = TestError ByteString
+newtype TestError = TestError ByteString
   deriving (Eq, Show, Typeable)
 instance Exception TestError
 
@@ -110,7 +110,7 @@ callbackErrorTest conn = Test.testCase "Multithreaded Pub/Sub - error in handler
   ctrl <- newPubSubController [("foo", throwIO . TestError)] []
 
   thread <- async (pubSubForever conn ctrl (atomically $ writeTVar initialComplete True))
-  atomically $ readTVar initialComplete >>= \b -> if b then return () else retry
+  atomically $ readTVar initialComplete >>= \b -> unless b retry
 
   runRedis conn $ publish "foo" "Hello"
 
@@ -126,7 +126,7 @@ removeFromUnregister conn = Test.testCase "Multithreaded Pub/Sub - unregister ha
   initialComplete <- newTVarIO False
   ctrl <- newPubSubController [] []
   withAsync (pubSubForever conn ctrl (atomically $ writeTVar initialComplete True)) $ \_ -> do
-    atomically $ readTVar initialComplete >>= \b -> if b then return () else retry
+    atomically $ readTVar initialComplete >>= \b -> unless b retry
 
     -- register to some channels
     void $ addChannelsAndWait ctrl

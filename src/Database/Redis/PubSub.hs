@@ -605,7 +605,12 @@ pubSubForever (Connection.ClusteredConnection _ _) _ _ = undefined
 -- Helpers
 --
 decodeMsg :: Reply -> PubSubReply
-decodeMsg r@(MultiBulk (Just (r0:r1:r2:rs))) = either (errMsg r) id $ do
+decodeMsg r@(MultiBulk (Just (r0:r1:r2:rs))) = doDecode r r0 r1 r2 rs
+decodeMsg r@(Push (r0:r1:r2:rs)) = doDecode r r0 r1 r2 rs
+decodeMsg r = errMsg r
+
+doDecode :: Reply -> Reply -> Reply -> Reply -> [Reply] -> PubSubReply
+doDecode r r0 r1 r2 rs = either (errMsg r) id $ do
     kind <- decode r0
     case kind :: ByteString of
         "message"      -> Msg <$> decodeMessage
@@ -619,8 +624,6 @@ decodeMsg r@(MultiBulk (Just (r0:r1:r2:rs))) = either (errMsg r) id $ do
     decodeMessage  = Message  <$> decode r1 <*> decode r2
     decodePMessage = PMessage <$> decode r1 <*> decode r2 <*> decode (head rs)
     decodeCnt      = fromInteger <$> decode r2
-
-decodeMsg r = errMsg r
 
 errMsg :: Reply -> a
 errMsg r = error $ "Hedis: expected pub/sub-message but got: " ++ show r

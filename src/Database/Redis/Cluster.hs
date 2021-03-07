@@ -387,7 +387,7 @@ requestNode (NodeConnection ctx lastRecvRef _) requests = do
             Nothing -> Scanner.scanWith (CC.recv ctx) reply B.empty
 
         case scanResult of
-          Scanner.Fail{}       -> CC.errConnClosed
+          Scanner.Fail{}    -> CC.errConnClosed
           Scanner.More{}    -> error "Hedis: parseWith returned Partial"
           Scanner.Done rest' r -> do
             IOR.writeIORef lastRecvRef (Just rest')

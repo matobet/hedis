@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP, OverloadedStrings, RecordWildCards, FlexibleContexts #-}
 
+{-# LANGUAGE FlexibleInstances #-}
 module Database.Redis.ManualCommands where
 
 import Prelude hiding (min, max)
@@ -841,16 +842,15 @@ data StreamsRecord = StreamsRecord
     } deriving (Show, Eq)
 
 instance RedisResult StreamsRecord where
-    decode (MultiBulk (Just [Bulk (Just recordId), MultiBulk (Just rawKeyValues)])) = do
-        keyValuesList <- mapM decode rawKeyValues
-        let keyValues = decodeKeyValues keyValuesList
+    decode (ArrayReply [BlobString recordId, ArrayReply rawKeyValues]) = do
+        keyValues <- pairs <$> mapM decode rawKeyValues
         return StreamsRecord{..}
-        where
-            decodeKeyValues :: [ByteString] -> [(ByteString, ByteString)]
-            decodeKeyValues bs = map (\[x,y] -> (x,y)) $ chunksOfTwo bs
-            chunksOfTwo (x:y:rest) = [x,y]:chunksOfTwo rest
-            chunksOfTwo _ = []
     decode a = Left a
+
+
+pairs :: [a] -> [(a, a)]
+pairs (x:y:rest) = (x,y) : pairs rest
+pairs _ = []
 
 data XReadOpts = XReadOpts
     { block :: Maybe Integer
@@ -874,10 +874,21 @@ data XReadResponse = XReadResponse
     , records :: [StreamsRecord]
     } deriving (Show, Eq)
 
-instance RedisResult XReadResponse where
-    decode (MultiBulk (Just [Bulk (Just stream), MultiBulk (Just rawRecords)])) = do
-        records <- mapM decode rawRecords
-        return XReadResponse{..}
+instance RedisResult [XReadResponse] where
+    decode (MapReply responses) = mapM decodeResponse responses 
+      where
+        decodeResponse (BlobString stream, ArrayReply rawRecords) = do  
+            records <- mapM decode rawRecords
+            return XReadResponse {..}
+        decodeResponse (stream, records) = Left $ ArrayReply [stream, records]
+
+    decode (ArrayReply rawResponses) = mapM decodeResponse rawResponses
+      where 
+        decodeResponse (ArrayReply [BlobString stream, ArrayReply rawRecords]) = do
+            records <- mapM decode rawRecords
+            return XReadResponse {..}
+        decodeResponse a = Left a
+        
     decode a = Left a
 
 xreadOpts
@@ -1000,7 +1011,7 @@ instance RedisResult XPendingSummaryResponse where
         Bulk (Just smallestPendingMessageId),
         Bulk (Just largestPendingMessageId),
         MultiBulk (Just [MultiBulk (Just rawGroupsAndCounts)])])) = do
-            let groupsAndCounts = chunksOfTwo rawGroupsAndCounts
+            let groupsAndCounts = pairs rawGroupsAndCounts
             numPendingMessagesByconsumer <- decodeGroupsAndCounts groupsAndCounts
             return XPendingSummaryResponse{..}
             where
@@ -1011,8 +1022,6 @@ instance RedisResult XPendingSummaryResponse where
                     decodedX <- decode x
                     decodedY <- decode y
                     return (decodedX, decodedY)
-                chunksOfTwo (x:y:rest) = (x,y):chunksOfTwo rest
-                chunksOfTwo _ = []
     decode a = Left a
 
 xpendingSummary
@@ -1117,10 +1126,15 @@ data XInfoConsumersResponse = XInfoConsumersResponse
     } deriving (Show, Eq)
 
 instance RedisResult XInfoConsumersResponse where
+    decode (MapReply [
+              (BlobString "name", BlobString xinfoConsumerName)
+            , (BlobString "pending", Integer xinfoConsumerNumPendingMessages)
+            , (BlobString "idle", Integer xinfoConsumerIdleTime)]) = Right XInfoConsumersResponse {..}
+
     decode (MultiBulk (Just [
         Bulk (Just "name"),
         Bulk (Just xinfoConsumerName),
-        Bulk (Just "pending"),
+        Bulk (Just "pending"),  
         Integer xinfoConsumerNumPendingMessages,
         Bulk (Just "idle"),
         Integer xinfoConsumerIdleTime])) = Right XInfoConsumersResponse{..}
@@ -1141,6 +1155,13 @@ data XInfoGroupsResponse = XInfoGroupsResponse
     } deriving (Show, Eq)
 
 instance RedisResult XInfoGroupsResponse where
+    decode (MapReply [
+          (BlobString "name", BlobString xinfoGroupsGroupName)
+        , (BlobString "consumers", Integer xinfoGroupsNumConsumers)
+        , (BlobString "pending", Integer xinfoGroupsNumPendingMessages)
+        , (BlobString "last-delivered-id", BlobString xinfoGroupsLastDeliveredMessageId)
+        ]) = Right XInfoGroupsResponse {..}
+
     decode (MultiBulk (Just [
         Bulk (Just "name"),Bulk (Just xinfoGroupsGroupName),
         Bulk (Just "consumers"),Integer xinfoGroupsNumConsumers,
@@ -1180,6 +1201,17 @@ instance RedisResult XInfoStreamResponse where
                     return XInfoStreamResponse{..}
             decodeRedis5 a = Left a
 
+            decodeRedis6 (MapReply [
+                (BlobString "length", Integer xinfoStreamLength),
+                (BlobString "radix-tree-keys", Integer xinfoStreamRadixTreeKeys),
+                (BlobString "radix-tree-nodes", Integer xinfoStreamRadixTreeNodes),
+                (BlobString "last-generated-id", BlobString xinfoStreamLastEntryId),
+                (BlobString "groups", Integer xinfoStreamNumGroups),
+                (BlobString "first-entry", rawFirstEntry),
+                (BlobString "last-entry", rawLastEntry) ]) = do
+                    xinfoStreamFirstEntry <- decode rawFirstEntry
+                    xinfoStreamLastEntry <- decode rawLastEntry
+                    return XInfoStreamResponse{..}
             decodeRedis6 (MultiBulk (Just [
                 Bulk (Just "length"),Integer xinfoStreamLength,
                 Bulk (Just "radix-tree-keys"),Integer xinfoStreamRadixTreeKeys,

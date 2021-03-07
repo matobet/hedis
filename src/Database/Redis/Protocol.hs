@@ -1,10 +1,12 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE PatternSynonyms #-}
 
-module Database.Redis.Protocol (Reply(..), reply, renderRequest) where
+module Database.Redis.Protocol (Reply(..), pattern BlobString, pattern ArrayReply, reply, renderRequest) where
 
-import Prelude hiding (error, take)
+import Prelude hiding (error, map, null, take)
 #if __GLASGOW_HASKELL__ < 710
 import Control.Applicative
 #endif
@@ -24,9 +26,24 @@ data Reply = SingleLine ByteString
            | Integer Integer
            | Bulk (Maybe ByteString)
            | MultiBulk (Maybe [Reply])
+           | Null
+           | Double Double
+           | Boolean Bool
+           | BulkError ByteString
+           | MapReply [(Reply, Reply)]
+           | SetReply [Reply]
+           | Push [Reply]
          deriving (Eq, Show, Generic)
 
 instance NFData Reply
+
+pattern BlobString :: ByteString -> Reply
+pattern BlobString x <- Bulk (Just x) where
+  BlobString x = Bulk (Just x)
+
+pattern ArrayReply :: [Reply] -> Reply
+pattern ArrayReply x <- MultiBulk (Just x) where
+  ArrayReply x = MultiBulk (Just x)
 
 ------------------------------------------------------------------------------
 -- Request
@@ -35,7 +52,7 @@ renderRequest :: [ByteString] -> ByteString
 renderRequest req = B.concat (argCnt:args)
   where
     argCnt = B.concat ["*", showBS (length req), crlf]
-    args   = map renderArg req
+    args   = renderArg <$> req
 
 renderArg :: ByteString -> ByteString
 renderArg arg = B.concat ["$",  argLen arg, crlf, arg, crlf]
@@ -51,6 +68,38 @@ crlf = "\r\n"
 ------------------------------------------------------------------------------
 -- Reply parsers
 --
+-- >>> Scanner.scanOnly reply "+hello world\r\n"
+-- Right (SingleLine "hello world")
+--
+-- >>> Scanner.scanOnly reply "-MYERROR some fail\r\n"
+-- Right (Error "MYERROR some fail")
+--
+-- >>> Scanner.scanOnly reply ":1\r\n"
+-- Right (Integer 1)
+--
+-- >>> Scanner.scanOnly reply "(42\r\n"
+-- Right (Integer 42)
+--
+-- >>> Scanner.scanOnly reply "$11\r\nhello world\r\n"
+-- Right (Bulk (Just "hello world"))
+--
+-- >>> Scanner.scanOnly reply "*3\r\n+foo\r\n*1\r\n:42\r\n$5\r\nhello\r\n"
+-- Right (MultiBulk (Just [SingleLine "foo",MultiBulk (Just [Integer 42]),Bulk (Just "hello")]))
+--
+-- >>> Scanner.scanOnly reply "_\r\n"
+-- Right Null
+--
+-- >>> Scanner.scanOnly reply "$-1\r\n"
+-- Right (Bulk Nothing)
+--
+-- >>> Scanner.scanOnly reply "*-1\r\n"
+-- Right (MultiBulk Nothing)
+--
+-- >>> Scanner.scanOnly reply "%0\r\n"
+-- Right (MapReply [])
+--
+-- >>> Scanner.scanOnly reply "%2\r\n+foo\r\n(100\r\n+bar\r\n~1\r\n+qux\r\n"
+-- Right (MapReply [(SingleLine "foo",Integer 100),(SingleLine "bar",SetReply [SingleLine "qux"])])
 {-# INLINE reply #-}
 reply :: Scanner Reply
 reply = do
@@ -58,9 +107,17 @@ reply = do
   case c of
     '+' -> string
     '-' -> error
-    ':' -> integer
+    ':' -> integer -- TODO: Make Int64
+    '(' -> integer -- Big integer
     '$' -> bulk
     '*' -> multi
+    '_' -> null
+    ',' -> double
+    '#' -> boolean
+    '=' -> bulk
+    '%' -> map
+    '~' -> set
+    '>' -> push
     _ -> fail "Unknown reply type"
 
 {-# INLINE string #-}
@@ -74,6 +131,12 @@ error = Error <$> line
 {-# INLINE integer #-}
 integer :: Scanner Reply
 integer = Integer <$> integral
+
+double :: Scanner Reply
+double = Double <$> floating
+
+boolean :: Scanner Reply
+boolean = Boolean <$> bool
 
 {-# INLINE bulk #-}
 bulk :: Scanner Reply
@@ -92,13 +155,52 @@ multi = MultiBulk <$> do
     then return Nothing
     else Just <$> replicateM len reply
 
+null :: Scanner Reply
+null = Null <$ eol
+
+map :: Scanner Reply
+map = MapReply <$> replicateIntegral mapEntry
+
+mapEntry :: Scanner (Reply, Reply)
+mapEntry = (,) <$> reply <*> reply
+
+set :: Scanner Reply
+set = SetReply <$> replicateIntegral reply
+
+push :: Scanner Reply
+push = Push <$> replicateIntegral reply
+
 {-# INLINE integral #-}
 integral :: Integral i => Scanner i
-integral = do
+integral = line >>= decodeText (Text.signed Text.decimal)
+
+replicateIntegral :: Scanner a -> Scanner [a]
+replicateIntegral s = integral >>= (`replicateM` s)
+
+inf :: Double
+inf = 1 / 0
+
+negInf :: Double
+negInf = -1 / 0
+
+floating :: Scanner Double
+floating = do
   str <- line
-  case Text.signed Text.decimal (Text.decodeUtf8 str) of
-    Left err -> fail (show err)
-    Right (l, _) -> return l
+  if | str == "inf" -> return inf
+     | str == "-inf" -> return negInf
+     | otherwise -> decodeText Text.double str
+
+decodeText :: Text.Reader a -> ByteString -> Scanner a
+decodeText r str = case r (Text.decodeUtf8 str) of
+  Left err -> fail (show err) 
+  Right (l, _) -> return l 
+
+bool :: Scanner Bool
+bool = do
+  str <- line
+  if | str == "t" -> return True
+     | str == "f" -> return False
+     | otherwise -> fail "Expected `t` or `f` as boolean value"
 
 {-# INLINE line #-}
 line :: Scanner ByteString
